@@ -1,0 +1,616 @@
+{
+  "name": "antifraud_daily",
+  "nodes": [
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1056,
+        -16
+      ],
+      "name": "Send a text message",
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0259d219-18ea-452a-a06b-27fe8cc07c5b",
+              "leftValue": "={{ $json.total }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        832,
+        0
+      ],
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -432,
+        0
+      ],
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with valid as (\n  select\n    courier_id,\n    ROUND(EXTRACT(EPOCH FROM (delivered_at_utc - created_at_utc)) / 60, 2) AS duration\n  from food_delivery_clean.orders\n  where is_fulfilled\n    and delivered_at_utc IS NOT NULL\n    and delivered_at_utc >= created_at_utc\n    and courier_id is not null\n),\nsuspicious as (\n  select\n    courier_id,\n    count(*) as orders,\n    round((percentile_cont(0.5) within group (order by duration))::numeric, 1) as median_min\n  from valid\n  group by 1\n  having count(*) >= 10\n     and percentile_cont(0.5) within group (order by duration) < 10\n)\nselect\n  count(*) as couriers,\n  string_agg(\n    'courier ' || courier_id || ': ' || orders || ' orders, median ' || median_min || ' min',\n    E'\\n' order by orders desc\n  ) as list,\n  string_agg(courier_id::text, ',') as ids\nfrom suspicious",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        -224,
+        0
+      ],
+      "name": "Couriers",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with rings as (\n  select device_id\n  from food_delivery_raw.users\n  where email_domain <> 'foodapp-test.internal'\n  group by 1\n  having count(*) >= 3\n),\nper_device as (\n    select\n    g.device_id,\n    count(distinct u.user_id) as accounts,\n    count(distinct u.user_id) filter (where o.promo_code = 'WELCOME10') as promo_accounts\n  from rings g\n  join food_delivery_raw.users u\n    on u.device_id = g.device_id\n   and u.email_domain <> 'foodapp-test.internal'\n  left join food_delivery_clean.orders o on o.user_id = u.user_id\n  group by 1\n),\nring_devices as (\n  select device_id, accounts,\n         row_number() over (order by accounts desc, device_id) as rn\n  from per_device\n  where promo_accounts * 1.0 / accounts >= 0.8\n)\nselect\n  count(*) as devices,\n  coalesce(sum(accounts), 0) as accounts,\n  string_agg('device ' || device_id || ': ' || accounts || ' accounts', E'\\n' order by rn)\n    filter (where rn <= 5) as top5,\n    string_agg('device ' || device_id || ': ' || accounts || ' accounts', E'\\n' order by rn)\n    filter (where rn <= 5) as top5,\n  string_agg(device_id::text, ',') as ids\nfrom ring_devices",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        0,
+        0
+      ],
+      "name": "Rings",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with refunded as (\n  select distinct order_id\n  from food_delivery_raw.refunds\n),\nper_user as (\n  select\n    o.user_id,\n    count(*) as orders,\n    count(rf.order_id) as refunded_orders\n  from food_delivery_clean.orders o\n  left join refunded rf on rf.order_id = o.order_id\n  where o.is_fulfilled\n  group by 1\n  having count(*) >= 5\n),\nflagged as (\n  select user_id, orders, refunded_orders,\n         row_number() over (order by refunded_orders desc, user_id) as rn\n  from per_user\n  where refunded_orders * 1.0 / orders >= 0.3\n)\nselect\n  count(*) as users,\n  string_agg('user ' || user_id || ': ' || refunded_orders || ' of ' || orders || ' orders refunded', E'\\n' order by rn)\n    filter (where rn <= 10) as top10,\n    string_agg('user ' || user_id || ': ' || refunded_orders || ' of ' || orders || ' orders refunded', E'\\n' order by rn)\n    filter (where rn <= 10) as top10,\n  string_agg(user_id::text, ',') as ids\nfrom flagged",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        192,
+        0
+      ],
+      "name": "Abusers",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with valid as (\n  select\n    courier_id,\n    ROUND(EXTRACT(EPOCH FROM (delivered_at_utc - created_at_utc)) / 60, 2) AS duration\n  from food_delivery_clean.orders\n  where is_fulfilled\n    and delivered_at_utc IS NOT NULL\n    and delivered_at_utc >= created_at_utc\n    and courier_id is not null\n),\nsuspicious as (\n  select\n    courier_id,\n    count(*) as orders,\n    round((percentile_cont(0.5) within group (order by duration))::numeric, 1) as median_min\n  from valid\n  group by 1\n  having count(*) >= 10\n     and percentile_cont(0.5) within group (order by duration) < 10\n)\nselect\n  to_char((now() at time zone 'Europe/Kiev')::date, 'YYYY-MM-DD') as run_date,\n  'courier' as rule,\n  courier_id as entity_id,\n  orders || ' orders, median ' || median_min || ' min' as detail\nfrom suspicious\norder by orders desc",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        -224,
+        192
+      ],
+      "name": "Log_Couriers",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with rings as (\n  select device_id\n  from food_delivery_raw.users\n  where email_domain <> 'foodapp-test.internal'\n  group by 1\n  having count(*) >= 3\n),\nper_device as (\n  select\n    g.device_id,\n    count(distinct u.user_id) as accounts,\n    count(distinct u.user_id) filter (where o.promo_code = 'WELCOME10') as promo_accounts\n  from rings g\n  join food_delivery_raw.users u\n    on u.device_id = g.device_id\n   and u.email_domain <> 'foodapp-test.internal'\n  left join food_delivery_clean.orders o on o.user_id = u.user_id\n  group by 1\n)\nselect\n  to_char((now() at time zone 'Europe/Kiev')::date, 'YYYY-MM-DD') as run_date,\n  'ring' as rule,\n  device_id as entity_id,\n  accounts || ' accounts, ' || promo_accounts || ' with WELCOME10' as detail\nfrom per_device\nwhere promo_accounts * 1.0 / accounts >= 0.8\norder by accounts desc",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        -224,
+        384
+      ],
+      "name": "Log_Rings",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with refunded as (\n  select distinct order_id\n  from food_delivery_raw.refunds\n),\nper_user as (\n  select\n    o.user_id,\n    count(*) as orders,\n    count(rf.order_id) as refunded_orders\n  from food_delivery_clean.orders o\n  left join refunded rf on rf.order_id = o.order_id\n  where o.is_fulfilled\n  group by 1\n  having count(*) >= 5\n)\nselect\n  to_char((now() at time zone 'Europe/Kiev')::date, 'YYYY-MM-DD') as run_date,\n  'abuser' as rule,\n  user_id as entity_id,\n  refunded_orders || ' of ' || orders || ' orders refunded' as detail\nfrom per_user\nwhere refunded_orders * 1.0 / orders >= 0.3\norder by refunded_orders desc",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        -224,
+        576
+      ],
+      "name": "Log_Abusers",
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_date",
+              "displayName": "run_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rule",
+              "displayName": "rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "entity_id",
+              "displayName": "entity_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "detail",
+              "displayName": "detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        0,
+        384
+      ],
+      "name": "Sheet_Rings",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_date",
+              "displayName": "run_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rule",
+              "displayName": "rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "entity_id",
+              "displayName": "entity_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "detail",
+              "displayName": "detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        0,
+        192
+      ],
+      "name": "Sheet_Couriers",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "run_date",
+              "displayName": "run_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rule",
+              "displayName": "rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "entity_id",
+              "displayName": "entity_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "detail",
+              "displayName": "detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        0,
+        576
+      ],
+      "name": "Sheet_Abusers",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "log",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        400,
+        0
+      ],
+      "name": "Get_Journal",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Kyiv' });\nconst journal = $input.all().map(i => i.json)\n  .filter(r => r.run_date && String(r.run_date) < today);\n\nconst lastDate = journal.map(r => String(r.run_date)).sort().pop();\nconst everSeen = {}, lastDay = {};\nfor (const r of journal) {\n  const id = String(r.entity_id);\n  (everSeen[r.rule] ??= new Set()).add(id);\n  if (String(r.run_date) === lastDate) (lastDay[r.rule] ??= new Set()).add(id);\n}\n\nconst parse = s => (s ? String(s).split(',') : []);\nconst rules = [\n  { rule: 'courier', title: 'Couriers',       ids: parse($('Couriers').first().json.ids) },\n  { rule: 'ring',    title: 'Ring devices',   ids: parse($('Rings').first().json.ids) },\n  { rule: 'abuser',  title: 'Refund abusers', ids: parse($('Abusers').first().json.ids) },\n];\n\nconst baseline = journal.length === 0;\nconst lines = [];\nlet total = 0, changes = 0;\nfor (const r of rules) {\n  const seen = everSeen[r.rule] || new Set();\n  const prev = lastDay[r.rule] || new Set();\n  const todaySet = new Set(r.ids);\n  const fresh = r.ids.filter(id => !seen.has(id));\n  const dropped = [...prev].filter(id => !todaySet.has(id));\n  total += r.ids.length;\n  changes += fresh.length + dropped.length;\n  lines.push(`${r.title}: 🆕 ${fresh.length} · 🔁 ${r.ids.length - fresh.length} · ✅ dropped ${dropped.length}`);\n  if (!baseline && fresh.length) lines.push('  new: ' + fresh.slice(0, 10).join(', '));\n  if (dropped.length) lines.push('  dropped: ' + dropped.slice(0, 10).join(', '));\n}\n\nconst header = baseline ? '🔎 Daily antifraud digest (baseline run, journal is empty)'\n  : changes ? '🔎 Daily antifraud digest: changes found'\n  : '🔎 Daily antifraud digest: no changes';\nreturn [{ json: { message: header + '\\n\\n' + lines.join('\\n'), total } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        0
+      ],
+      "name": "Compare"
+    }
+  ],
+  "connections": {
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Couriers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log_Couriers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log_Rings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log_Abusers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Couriers": {
+      "main": [
+        [
+          {
+            "node": "Rings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rings": {
+      "main": [
+        [
+          {
+            "node": "Abusers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Abusers": {
+      "main": [
+        [
+          {
+            "node": "Get_Journal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log_Couriers": {
+      "main": [
+        [
+          {
+            "node": "Sheet_Couriers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log_Rings": {
+      "main": [
+        [
+          {
+            "node": "Sheet_Rings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log_Abusers": {
+      "main": [
+        [
+          {
+            "node": "Sheet_Abusers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get_Journal": {
+      "main": [
+        [
+          {
+            "node": "Compare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "Europe/Kyiv",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "errorWorkflow": "YOUR_ERROR_WORKFLOW_ID"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "tags": [],
+  "pinData": {}
+}

@@ -1,0 +1,20 @@
+cat > .gitignore <<'EOF'
+# середовище й секрети
+.venv/
+.env
+*.env
+*.pem
+# сирі й згенеровані дані
+*.csv
+*.csv.gz
+*.zip
+*.xlsx
+# ground truth (на випадок, якщо лежить поруч)
+*ground_truth*
+*truth*
+*labels*
+# службове
+.ipynb_checkpoints/
+__pycache__/
+.DS_Store
+EOF

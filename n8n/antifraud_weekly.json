@@ -1,0 +1,142 @@
+{
+  "name": "antifraud_weekly",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtHour": 18
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -976,
+        -16
+      ],
+      "id": "5b4c5581-96b2-4c5a-9e46-9a0c85293e18",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "log",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -752,
+        -16
+      ],
+      "id": "211afe5a-ed18-4710-9d0f-9c10322c77c9",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);\nconst MIN_DAYS = 5;                       // для тесту постав 1\n\nconst byKey = {};\nfor (const r of rows) {\n  if (!r.run_date || r.run_date < since) continue;\n  const key = r.rule + '|' + r.entity_id;\n  byKey[key] = byKey[key] || { rule: r.rule, id: r.entity_id, days: new Set() };\n  byKey[key].days.add(r.run_date);\n}\n\nconst lines = [];\nfor (const rule of ['courier', 'ring', 'abuser']) {\n  const all = Object.values(byKey).filter(x => x.rule === rule);\n  const rep = all.filter(x => x.days.size >= MIN_DAYS)\n                 .sort((a, b) => b.days.size - a.days.size);\n  lines.push(`${rule}: ${all.length} unique, ${rep.length} flagged on ${MIN_DAYS}+ days`);\n  rep.slice(0, 5).forEach(x => lines.push(`  ${x.id}: ${x.days.size}/7 days`));\n}\nreturn [{ json: { message: '📅 Weekly antifraud summary\\n' + lines.join('\\n') } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        -16
+      ],
+      "id": "d5056658-fffe-4329-99a4-508d20a055f2",
+      "name": "Summary"
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -304,
+        -16
+      ],
+      "id": "c5f1f1ae-ef33-4581-8426-059c38fe3356",
+      "name": "Send a text message",
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "REPLACE_WITH_YOUR_CREDENTIAL"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summary": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "Europe/Kyiv",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "errorWorkflow": "YOUR_ERROR_WORKFLOW_ID"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "tags": []
+}

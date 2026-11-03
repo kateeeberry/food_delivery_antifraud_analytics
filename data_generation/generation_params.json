@@ -1,0 +1,9 @@
+{
+  "seed": 42,
+  "users_base": 50000,
+  "users_total": 50228,
+  "orders": 500550,
+  "period": "2025-01-01..2025-12-31",
+  "currency": "EUR",
+  "timezone_of_business": "Europe/Berlin"
+}
