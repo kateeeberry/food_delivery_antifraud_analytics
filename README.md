@@ -35,3 +35,5 @@ promo_redemptions.order_id, app_events.user_id are foreign keys.
   (keep it away from the analysis/agent until you score your checks).
 - Loading to PostgreSQL (Neon): create a schema first (e.g. `food_delivery`), load CSVs as text/raw columns,
   then cast in a separate step. Do not alter the raw tables.
+- Negative total_eur. In 18 of 500,550 orders (0.004%), total_eur is negative, and its absolute value equals subtotal_eur + delivery_fee_eur − discount_eur + tip_eur. This is a sign inversion in orders only:
+  the matching payments.amount_eur is positive and equals the absolute value (all 18 payments are captured). For revenue analysis, use payments.amount_eur or ABS(total_eur) for these orders; do not sum total_eur as it is.
